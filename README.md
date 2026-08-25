@@ -32,9 +32,14 @@ O projeto elimina o trabalho manual de verificação diária das filas de "Regis
   source venv/bin/activate  # Linux/Mac
   venv\Scripts\activate     # Windows
   pip install -r requirements.txt
+  
   Pré-requisito do Selenium: Certifique-se de ter o Google Chrome instalado em sua máquina. O WebDriver fará a ponte automática com o navegador.
+  
   Ajuste o caminho do arquivo Excel na variável CAMINHO_PLANILHA dentro do script.
+
+
   Execute a automação:
+  
   python nome_do_script.py
 
   
