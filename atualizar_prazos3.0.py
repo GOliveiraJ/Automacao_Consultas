@@ -19,7 +19,7 @@ PRAZO_RENOVACAO_DIAS = 150  # 6072
 PRAZO_REGISTRO_DIAS = 90    # 6071
 
 # --- CAMINHO DA PLANILHA ---
-CAMINHO_PLANILHA = r"Seu caminho"
+CAMINHO_PLANILHA = r"C:"
 def padronizar_dado(val):
     if pd.isna(val) or val is None: return ""
     return re.sub(r"[^\d./-]", "", str(val))
