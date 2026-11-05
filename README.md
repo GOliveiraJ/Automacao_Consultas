@@ -41,5 +41,3 @@ O projeto elimina o trabalho manual de verificação diária das filas de "Regis
   Execute a automação:
   
   python nome_do_script.py
-
-  
