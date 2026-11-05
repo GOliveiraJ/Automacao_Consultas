@@ -19,9 +19,7 @@ PRAZO_RENOVACAO_DIAS = 150  # 6072
 PRAZO_REGISTRO_DIAS = 90    # 6071
 
 # --- CAMINHO DA PLANILHA ---
-CAMINHO_PLANILHA = r"C:\Users\gabriel.jesus\ANVISA - Agencia Nacional de Vigilancia Sanitaria\GGTAB - Oficial - Fumigenos\2 - REGISTRO CCTAB\REGISTRO e RENOVAÇÃO_CONTROLE DAS PETIÇÕES\CONTROLE DOS PRAZOS DE FILAS_2026.xlsx"
-
-
+CAMINHO_PLANILHA = r"Seu caminho"
 def padronizar_dado(val):
     if pd.isna(val) or val is None: return ""
     return re.sub(r"[^\d./-]", "", str(val))
