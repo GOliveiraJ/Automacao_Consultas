@@ -1,15 +1,15 @@
 from copy import copy
 from datetime import datetime, date, timedelta
 import re
-import statistics
 import time
+import statistics
 import openpyxl
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 import pandas as pd
 
-# Usando o Selenium Padrão 
+# Usando o Selenium Padrão (Conexão Remota Bypass Cloudflare)
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
@@ -20,34 +20,29 @@ PRAZO_REGISTRO_DIAS = 90    # 6071
 
 # --- CAMINHO DA PLANILHA ---
 CAMINHO_PLANILHA = r"C:"
+
+
 def padronizar_dado(val):
     if pd.isna(val) or val is None: return ""
     return re.sub(r"[^\d./-]", "", str(val))
 
 
 def converter_para_data(val):
-    """Converte valores da célula (datetime, date ou string DD/MM/YYYY) em objeto date."""
-    if val is None or str(val).strip() == "":
-        return None
-    if isinstance(val, datetime):
-        return val.date()
-    if isinstance(val, date):
-        return val
-    texto = str(val).strip()
-    if texto.startswith("="):
-        return None
+    """Garante que qualquer valor vire um objeto date do Python."""
+    if not val: return None
     try:
-        return datetime.strptime(texto[:10], "%d/%m/%Y").date()
+        if isinstance(val, datetime): return val.date()
+        if isinstance(val, date): return val
+        # Se for uma string de fórmula antiga, ignora para recalcular
+        if isinstance(val, str) and val.strip().startswith("="): return None 
+        return datetime.strptime(str(val).strip()[:10], "%d/%m/%Y").date()
     except:
-        try:
-            return datetime.strptime(texto[:10], "%Y-%m-%d").date()
-        except:
-            return None
+        return None
 
 
 def encontrar_primeira_linha_vazia(ws, linha_inicial=10):
     linha = linha_inicial
-    while ws.cell(row=linha, column=3).value is not None and str(ws.cell(row=linha, column=3).strip() != ""):
+    while ws.cell(row=linha, column=3).value is not None and str(ws.cell(row=linha, column=3).value).strip() != "":
         linha += 1
     return linha
 
@@ -101,8 +96,9 @@ def ordenar_planilha_por_data(ws, linha_cabecalho=9):
             linhas_dados.append(linha)
             
     def extrair_data(linha):
-        dt = converter_para_data(linha[1])
-        return dt if dt else date.max
+        val = linha[1] 
+        data_convertida = converter_para_data(val)
+        return data_convertida if data_convertida else date.max
             
     linhas_dados.sort(key=extrair_data)
     
@@ -113,6 +109,99 @@ def ordenar_planilha_por_data(ws, linha_cabecalho=9):
             ws.cell(row=r, column=c_idx + 1).value = val
 
 
+def atualizar_indicadores_e_cores(ws, nome_aba, linha_cabecalho=9):
+    col_prazo, col_saida, col_entrada, col_tempo, col_mediana = None, None, None, None, None
+    for c in range(1, ws.max_column + 1):
+        val = str(ws.cell(row=linha_cabecalho, column=c).value).lower()
+        if "prazo" in val: col_prazo = c
+        elif "saída" in val or "saida" in val: col_saida = c
+        elif "entrada" in val: col_entrada = c
+        elif "tempo" in val: col_tempo = c
+        elif "mediana" in val: col_mediana = c
+            
+    if not col_prazo: return
+        
+    hoje = datetime.now().date()
+    prazo_dias_aba = PRAZO_REGISTRO_DIAS if nome_aba == "6071" else PRAZO_RENOVACAO_DIAS
+    
+    meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+    ws['B2'] = f"{hoje.day:02d}/{meses[hoje.month - 1]}"
+    
+    tempos_calculados = []
+    
+    for r in range(linha_cabecalho + 1, ws.max_row + 1):
+        cel_proc = ws.cell(row=r, column=3) 
+        if cel_proc.value is None or str(cel_proc.value).strip() == "":
+            continue
+
+        cel_prazo = ws.cell(row=r, column=col_prazo)
+        cel_saida = ws.cell(row=r, column=col_saida) if col_saida else None
+        cel_tempo = ws.cell(row=r, column=col_tempo) if col_tempo else None
+        cel_entrada = ws.cell(row=r, column=col_entrada) if col_entrada else None
+        
+        data_ent = converter_para_data(cel_entrada.value) if cel_entrada else None
+        data_sai = converter_para_data(cel_saida.value) if cel_saida else None
+        
+        # 1. CÁLCULO DE TEMPO DE FILA (Número Inteiro Real para Power BI)
+        if cel_tempo:
+            if data_ent and data_sai:
+                dias_fila = (data_sai - data_ent).days
+                cel_tempo.value = dias_fila
+                tempos_calculados.append(dias_fila)
+            else:
+                cel_tempo.value = None
+
+        # 2. LIMPEZA DE FÓRMULAS E CÁLCULO DO PRAZO LEGAL
+        if cel_prazo and data_ent:
+            val_prazo = str(cel_prazo.value).strip()
+            if val_prazo.startswith("=") or cel_prazo.value is None:
+                nova_data_prazo = data_ent + timedelta(days=prazo_dias_aba)
+                cel_prazo.value = nova_data_prazo
+                cel_prazo.number_format = 'dd/mm/yyyy'
+
+        # 3. ATUALIZAÇÃO DE CORES (Condição de Prazo)
+        if cel_prazo.value is not None:
+            cor_prazo = "000000" 
+            data_prazo = converter_para_data(cel_prazo.value)
+            
+            if data_sai:
+                cor_prazo = "A6A6A6" # Cinza se já saiu
+            elif data_prazo:
+                dias_restantes = (data_prazo - hoje).days
+                
+                if dias_restantes < 0: cor_prazo = "FF0000" 
+                elif 0 <= dias_restantes < 7: cor_prazo = "FFC000" 
+                elif 7 <= dias_restantes <= 15: cor_prazo = "A52A2A" 
+                elif 15 < dias_restantes <= 30: cor_prazo = "7030A0" 
+                elif 30 < dias_restantes <= 60: cor_prazo = "00B050" 
+                    
+            f_prazo = cel_prazo.font
+            if f_prazo: cel_prazo.font = Font(name=f_prazo.name, size=f_prazo.size, bold=f_prazo.bold, color=cor_prazo)
+            else: cel_prazo.font = Font(color=cor_prazo)
+
+    # 4. CÁLCULO DA MEDIANA (Valor Matemático Direto)
+    if col_mediana:
+        cel_mediana_topo = ws.cell(row=linha_cabecalho + 1, column=col_mediana)
+        if tempos_calculados:
+            mediana_real = statistics.median(tempos_calculados)
+            cel_mediana_topo.value = mediana_real
+        else:
+            cel_mediana_topo.value = None
+            
+        # Limpa as células abaixo
+        for r in range(linha_cabecalho + 2, ws.max_row + 1):
+            ws.cell(row=r, column=col_mediana).value = None
+
+        limite_meta = 70 if nome_aba == "6071" else 120
+        letra_mediana = get_column_letter(col_mediana)
+        cel_regra = f"{letra_mediana}{linha_cabecalho + 1}"
+        ws.conditional_formatting.add(cel_regra, CellIsRule(operator='greaterThan', formula=[str(limite_meta)], font=Font(color="FF0000", bold=True)))
+        ws.conditional_formatting.add(cel_regra, CellIsRule(operator='lessThanOrEqual', formula=[str(limite_meta)], font=Font(color="00B050", bold=True)))
+
+
+# =====================================================================
+# FUNÇÕES RESTAURADAS PARA INTERAÇÃO COM O SITE (BOTÕES E TABELAS)
+# =====================================================================
 def selecionar_opcao_segura(driver, index_select, texto_procurado, timeout=20):
     tempo_inicio = time.time()
     while time.time() - tempo_inicio < timeout:
@@ -175,100 +264,9 @@ def clonar_formatacao(ws, linha_inicio, qtd_linhas_novas):
                 cel_nova.number_format, cel_nova.alignment = copy(cel_modelo.number_format), copy(cel_modelo.alignment)
 
 
-def atualizar_indicadores_e_cores(ws, nome_aba, linha_cabecalho=9):
-    col_prazo, col_saida, col_entrada, col_tempo, col_mediana = None, None, None, None, None
-    for c in range(1, ws.max_column + 1):
-        val = str(ws.cell(row=linha_cabecalho, column=c).value).lower()
-        if "prazo" in val: col_prazo = c
-        elif "saída" in val or "saida" in val: col_saida = c
-        elif "entrada" in val: col_entrada = c
-        elif "tempo" in val: col_tempo = c
-        elif "mediana" in val: col_mediana = c
-            
-    if not col_prazo: return
-        
-    hoje = datetime.now().date()
-    dias_prazo_legal = PRAZO_REGISTRO_DIAS if nome_aba == "6071" else PRAZO_RENOVACAO_DIAS
-    letra_mediana = get_column_letter(col_mediana) if col_mediana else 'H'
-    
-    meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
-    ws['B2'] = f"{hoje.day:02d}/{meses[hoje.month - 1]}"
-    
-    tempos_calculados = []
-
-    for r in range(linha_cabecalho + 1, ws.max_row + 1):
-        # Limpa resíduos na coluna de mediana nas linhas abaixo da linha 10
-        if col_mediana and r > linha_cabecalho + 1:
-            ws.cell(row=r, column=col_mediana).value = None
-
-        cel_proc = ws.cell(row=r, column=3) 
-        if cel_proc.value is None or str(cel_proc.value).strip() == "":
-            continue
-
-        cel_entrada = ws.cell(row=r, column=col_entrada) if col_entrada else ws.cell(row=r, column=2)
-        cel_prazo = ws.cell(row=r, column=col_prazo)
-        cel_saida = ws.cell(row=r, column=col_saida) if col_saida else None
-        cel_tempo = ws.cell(row=r, column=col_tempo) if col_tempo else None
-        
-        dt_entrada = converter_para_data(cel_entrada.value)
-        dt_saida = converter_para_data(cel_saida.value) if cel_saida else None
-        dt_prazo = converter_para_data(cel_prazo.value)
-
-        # 1. Garante que o Prazo Legal seja sempre uma data estática (substitui fórmulas antigas =B10+150)
-        if dt_entrada and (dt_prazo is None or str(cel_prazo.value).strip().startswith("=")):
-            dt_prazo = dt_entrada + timedelta(days=dias_prazo_legal)
-            cel_prazo.value = dt_prazo
-            cel_prazo.number_format = 'dd/mm/yyyy'
-
-        # 2. Calcula diretamente o Tempo de Fila como número inteiro (sem fórmula do Excel)
-        if cel_tempo:
-            if dt_entrada and dt_saida:
-                dias_fila = (dt_saida - dt_entrada).days
-                cel_tempo.value = int(dias_fila)
-                cel_tempo.number_format = '0'
-                tempos_calculados.append(dias_fila)
-            else:
-                cel_tempo.value = None
-
-        # 3. Aplica a coloração de alerta no Prazo Legal
-        if dt_prazo is not None:
-            cor_prazo = "000000" 
-            
-            if dt_saida is not None:
-                cor_prazo = "A6A6A6"
-            else:
-                dias_restantes = (dt_prazo - hoje).days
-                
-                if dias_restantes < 0: cor_prazo = "FF0000" 
-                elif 0 <= dias_restantes < 7: cor_prazo = "FFC000" 
-                elif 7 <= dias_restantes <= 15: cor_prazo = "A52A2A" 
-                elif 15 < dias_restantes <= 30: cor_prazo = "7030A0" 
-                elif 30 < dias_restantes <= 60: cor_prazo = "00B050" 
-                    
-            f_prazo = cel_prazo.font
-            if f_prazo: cel_prazo.font = Font(name=f_prazo.name, size=f_prazo.size, bold=f_prazo.bold, color=cor_prazo)
-            else: cel_prazo.font = Font(color=cor_prazo)
-
-    # 4. Calcula a Mediana diretamente no Python e grava o valor pronto na linha 10 (H10)
-    if col_mediana:
-        cel_mediana = ws.cell(row=linha_cabecalho + 1, column=col_mediana)
-        if tempos_calculados:
-            med_val = statistics.median(tempos_calculados)
-            # Se for inteiro exato (ex: 79.0), grava como int(79); caso contrário, arredonda para 1 casa
-            cel_mediana.value = int(med_val) if med_val == int(med_val) else round(med_val, 1)
-        else:
-            cel_mediana.value = None
-
-        limite_meta = 70 if nome_aba == "6071" else 120
-        cel_regra = f"{letra_mediana}{linha_cabecalho + 1}"
-        
-        # Aplica a cor diretamente na fonte da célula + mantém a regra condicional
-        cor_med = "FF0000" if (cel_mediana.value is not None and cel_mediana.value > limite_meta) else "00B050"
-        cel_mediana.font = Font(color=cor_med, bold=True)
-        ws.conditional_formatting.add(cel_regra, CellIsRule(operator='greaterThan', formula=[str(limite_meta)], font=Font(color="FF0000", bold=True)))
-        ws.conditional_formatting.add(cel_regra, CellIsRule(operator='lessThanOrEqual', formula=[str(limite_meta)], font=Font(color="00B050", bold=True)))
-
-
+# =====================================================================
+# NÚCLEO DA AUTOMAÇÃO
+# =====================================================================
 def consultar_fila_anvisa(driver, nome_fila, nome_subfila):
     print(f"\n=======================================================\n -> Configurando filtros para a fila: {nome_fila}...\n=======================================================")
     try:
@@ -280,18 +278,18 @@ def consultar_fila_anvisa(driver, nome_fila, nome_subfila):
         time.sleep(2)
 
         print("\n" + "*" * 60)
-        print(f"👉 ATENÇÃO: Vá ao Chrome agora e clique no botão\n👉 azul 'PESQUISAR' para gerar a tabela de {nome_fila}!")
+        print(f"👉 ATENÇÃO: Vá na janela do Chrome agora e clique no botão\n👉 azul 'PESQUISAR' para gerar a tabela de {nome_fila}!")
         print("*" * 60)
-        input(" -> Após clicar em PESQUISAR e a tabela aparecer, PRIMA [ENTER] AQUI... ")
+        input(" -> Após clicar em PESQUISAR e a tabela aparecer, APERTE [ENTER] AQUI... ")
 
-        print(f"\n -> A aguardar 20 segundos para a tabela {nome_fila} carregar totalmente...")
+        print(f"\n -> Aguardando 20 segundos para a tabela {nome_fila} carregar totalmente...")
         for i in range(20, 0, -5):
             print(f"    ... {i} segundos restantes ...")
             time.sleep(5)
 
-        print(f" -> A ler os dados da tabela de {nome_fila}...")
+        print(f" -> Lendo os dados da tabela de {nome_fila}...")
         df_resultado = extrair_tabela_blindada(driver)
-        print(f" -> Sucesso! Extraídos {len(df_resultado)} registos da web.")
+        print(f" -> Sucesso! Extraídos {len(df_resultado)} registros da web.")
 
         clicar_botao_por_texto(driver, "Limpar")
         time.sleep(3)
@@ -302,7 +300,7 @@ def consultar_fila_anvisa(driver, nome_fila, nome_subfila):
 
 
 def extrair_dados_anvisa():
-    print(">>> 1. A ligar ao Chrome validado...")
+    print(">>> 1. Conectando ao Chrome validado...")
     
     options = webdriver.ChromeOptions()
     options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
@@ -316,11 +314,11 @@ def extrair_dados_anvisa():
     try:
         print("\n" + "!" * 70)
         print("🚨 VERIFICAÇÃO MANUAL DO CLOUDFLARE 🚨")
-        print("Antes de prosseguir, certifique-se de que JÁ ACEDEU a")
+        print("Antes de prosseguir, certifique-se de que JÁ ACESSOU a")
         print("https://consultas.anvisa.gov.br/ no Chrome aberto e")
-        print("JÁ PASSOU pelo CAPTCHA com sucesso.")
+        print("JÁ PASSOU pelo CAPTCHA com sucesso (se ele apareceu).")
         print("!" * 70)
-        input(" -> SE JÁ ESTÁ NA PÁGINA INICIAL DA ANVISA, PRIMA [ENTER] AQUI... ")
+        input(" -> SE JÁ ESTÁ NA PÁGINA INICIAL DA ANVISA, APERTE [ENTER] AQUI... ")
         
         try:
             elementos = driver.find_elements(By.XPATH, "//*[contains(text(), 'Fila de Análise') or contains(text(), 'Fila de análise')]")
@@ -337,11 +335,11 @@ def extrair_dados_anvisa():
         df_renovacao_web = consultar_fila_anvisa(driver, nome_fila="RENOVAÇÃO", nome_subfila="RENOVAÇÃO")
         return df_registro_web, df_renovacao_web
     finally:
-        print("\n -> Extração concluída. A desligar o robô do navegador.")
+        print("\n -> Extração concluída. Desconectando o robô do navegador.")
 
 
 def executar_automacao_oficial():
-    print("\n>>> 2. A ler as planilhas para verificar os processos...")
+    print("\n>>> 2. Lendo as planilhas para verificar os processos...")
     df_reg_atual = pd.read_excel(CAMINHO_PLANILHA, sheet_name="6071", header=8)
     df_renov_atual = pd.read_excel(CAMINHO_PLANILHA, sheet_name="6072", header=8)
 
@@ -436,13 +434,13 @@ def executar_automacao_oficial():
         
     ordenar_planilha_por_data(ws_renov, linha_cabecalho=9)
 
-    print("\n    [Calculando Indicadores, Mediana, Ordenação e Cores...]")
+    print("\n    [Calculando Dados e Atualizando Cores para o Power BI...]")
     atualizar_indicadores_e_cores(ws_reg, nome_aba="6071", linha_cabecalho=9)
     atualizar_indicadores_e_cores(ws_renov, nome_aba="6072", linha_cabecalho=9)
 
     wb.save(CAMINHO_PLANILHA)
     wb.close()
-    print("\n💾 Planilha oficial guardada com valores estáticos! Fluxo completo finalizado.")
+    print("\n💾 Planilha oficial salva! Power BI pronto para leitura.")
     print("=" * 70)
 
 if __name__ == "__main__":
